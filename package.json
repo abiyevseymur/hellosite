@@ -1,0 +1,29 @@
+{
+  "name": "HelloSite",
+  "version": "1.0.0",
+  "description": "Telegram bot generates landing page via ai",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "axios": "^1.8.4",
+    "child_process": "^1.0.2",
+    "dotenv": "^16.4.7",
+    "fs": "^0.0.1-security",
+    "fs-extra": "^11.3.0",
+    "get-image-colors": "^4.0.1",
+    "jsdom": "^26.1.0",
+    "minimist": "^1.2.8",
+    "openai": "^4.96.0",
+    "path": "^0.12.7",
+    "puppeteer": "^24.7.1",
+    "simple-git": "^3.27.0",
+    "telegraf": "^4.16.3",
+    "uuid": "^9.0.1"
+  },
+  "author": "",
+  "license": "ISC"
+}

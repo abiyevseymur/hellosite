@@ -1,0 +1,5 @@
+# Ignore the 'generated' folder
+generated/
+
+# Ignore all .env files
+.env
