@@ -90,3 +90,20 @@ export const sectionFields = {
     description: "List pricing plans and what's included.",
   },
 };
+
+export const sectionLabels = {
+  header: "📌 Top of the website (logo & menu)",
+  hero: "🎯 First screen (title, description, button)",
+  value_prop: "💡 Why choose us (key benefits)",
+  features: "🛠️ What we offer (features)",
+  testimonials: "💬 Customer feedback",
+  cta: "👉 Call to action (button block)",
+  about: "👤 About us or team",
+  services: "🐾 Services we provide",
+  portfolio: "🖼 Examples of our work",
+  "social-proof": "✅ Trusted by brands or users",
+  faq: "❓ Frequently asked questions",
+  pricing: "💸 Pricing plans",
+  contact: "📞 Contact details or form",
+  footer: "📩 Bottom of the website (copyright & socials)",
+};

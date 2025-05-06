@@ -2,7 +2,7 @@
 export const headerVariants = {
   "header-centered": `
   Transparent header with logo centered above the menu.
-  Header must use absolute, top-0, left-0, w-full, z-10 to be placed over Hero section.
+  Header must use absolute, top-0, left-0, w-full, z-15 to be placed over Hero section.
   Logo: use class="mx-auto max-w-[250px] max-h-[100px]" inside header container.
   Below the logo: centered navigation inside max-w-[1200px] mx-auto.
   Navigation: use flex justify-center gap-6.

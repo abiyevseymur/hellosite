@@ -1,68 +1,17 @@
+import puppeteer from "puppeteer";
 import axios from "axios";
-import dotenv from "dotenv";
-import getColors from "get-image-colors";
 import fs from "fs";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
-import { fileURLToPath } from "url";
-import puppeteer from "puppeteer";
-
+import getColors from "get-image-colors";
+import dotenv from "dotenv";
 dotenv.config();
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+import { fileURLToPath } from "url";
+
 const UNSPLASH_ACCESS_KEY = process.env.UNSPLASH_ACCESS_KEY;
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-export async function sendOpenAIRequest(
-  systemPrompt,
-  userPrompt,
-  temperature = 0,
-  model = "gpt-4.1-mini"
-) {
-  console.log(
-    "@@@ REQUEST OPENAI: ",
-    "system prompt - ",
-    systemPrompt,
-    " | user prompt - ",
-    userPrompt,
-    " | temperature - ",
-    temperature
-  );
-  const response = await axios.post(
-    "https://api.openai.com/v1/chat/completions",
-    {
-      model: model || "gpt-4.1-mini",
-      temperature,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-    }
-  );
-
-  return response.data.choices[0].message.content.trim();
-}
-
-export async function searchImages(keyword) {
-  const response = await axios.get("https://api.unsplash.com/search/photos", {
-    params: {
-      query: keyword, // e.g. "tacos", "startup", "fitness"
-      per_page: 5,
-    },
-    headers: {
-      Authorization: `Client-ID ${UNSPLASH_ACCESS_KEY}`,
-    },
-  });
-
-  const imageUrls = response.data.results.map((photo) => photo.urls.regular);
-  return imageUrls;
-}
 
 export async function getLogoColorsFromUrl(logoUrl) {
   try {
@@ -100,15 +49,15 @@ export async function generatePreviewImages(
   const fullHtml = htmlContent.includes("<html")
     ? htmlContent
     : `<!DOCTYPE html>
-      <html lang="en">
-      <head>
-        <meta charset="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-     <link href="https://cdn.jsdelivr.net/npm/Tailwind@5.3.5/dist/css/Tailwind.min.css" rel="stylesheet" integrity="sha384-SgOJa3DmI69IUzQ2PVdRZhwQ+dy64/BUtbMJw1MZ8t5HZApcHrRKUc4W0kG879m7" crossorigin="anonymous">
-        <style>body { margin: 0; }</style>
-      </head>
-      <body>${htmlContent}</body>
-      </html>`;
+        <html lang="en">
+        <head>
+          <meta charset="UTF-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+       <link href="https://cdn.jsdelivr.net/npm/Tailwind@5.3.5/dist/css/Tailwind.min.css" rel="stylesheet" integrity="sha384-SgOJa3DmI69IUzQ2PVdRZhwQ+dy64/BUtbMJw1MZ8t5HZApcHrRKUc4W0kG879m7" crossorigin="anonymous">
+          <style>body { margin: 0; }</style>
+        </head>
+        <body>${htmlContent}</body>
+        </html>`;
   // Desktop
   await page.setViewport({ width: 1200, height: 800 });
   await page.setContent(fullHtml, { waitUntil: "networkidle0" });
@@ -126,4 +75,19 @@ export async function generatePreviewImages(
   await ctx.replyWithPhoto({ source: mobilePath });
 
   await browser.close();
+}
+
+export async function searchImages(keyword) {
+  const response = await axios.get("https://api.unsplash.com/search/photos", {
+    params: {
+      query: keyword, // e.g. "tacos", "startup", "fitness"
+      per_page: 5,
+    },
+    headers: {
+      Authorization: `Client-ID ${UNSPLASH_ACCESS_KEY}`,
+    },
+  });
+
+  const imageUrls = response.data.results.map((photo) => photo.urls.regular);
+  return imageUrls;
 }
