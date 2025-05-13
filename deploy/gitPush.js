@@ -14,7 +14,7 @@ export const deployGitAndPreview = async (ctx, session) => {
     .toLowerCase()
     .replace(/\s+/g, "-")
     .replace(/[^\w-]/g, "");
-
+  session.repo = projectName;
   const folderPath = path.resolve(
     __dirname,
     `../generated`,
@@ -39,7 +39,7 @@ export const deployGitAndPreview = async (ctx, session) => {
 
     console.log(`✅ Successful deployment:\n${stdout}`);
     await ctx.reply(
-      `🚀 <b>Deployment Successful!</b>\n\n🔗 <a href="${siteUrl}/">Click here to view your website</a>\n\n<i>This is a preview link. Later, you will be able to connect a real custom domain!</i>\n\nIt may take a few seconds to appear globally.`,
+      `🚀 <b>Deployment Successful!</b>\n\n🔗 <a href="${siteUrl}">Click here to view your website</a>\n\n<i>This is a preview link. Later, you will be able to connect a real custom domain!</i>\n\nIt may take a few seconds to appear globally.`,
       { parse_mode: "HTML" }
     );
   } catch (error) {

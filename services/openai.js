@@ -4,10 +4,13 @@ import { askQuestionPrompt } from "../prompts.js";
 import { userSessions } from "../index.js";
 import axios from "axios";
 import dotenv from "dotenv";
+import { OpenAI } from "openai"; // из пакета openai
 
 dotenv.config();
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+export const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
 export async function sendOpenAIRequest(
   systemPrompt,
@@ -16,33 +19,25 @@ export async function sendOpenAIRequest(
   model = "gpt-4.1-mini"
 ) {
   console.log(
-    "@@@ REQUEST OPENAI: ",
-    "system prompt - ",
+    "@@@ REQUEST OPENAI:",
+    "system prompt -",
     systemPrompt,
-    " | user prompt - ",
+    "| user prompt -",
     userPrompt,
-    " | temperature - ",
+    "| temperature -",
     temperature
   );
-  const response = await axios.post(
-    "https://api.openai.com/v1/chat/completions",
-    {
-      model: model || "gpt-4.1-mini",
-      temperature,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-    }
-  );
 
-  return response.data.choices[0].message.content.trim();
+  const response = await openai.chat.completions.create({
+    model,
+    temperature,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt },
+    ],
+  });
+
+  return response.choices[0]?.message?.content?.trim() || "";
 }
 
 export async function askQuestion(ctx, about) {

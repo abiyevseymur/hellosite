@@ -3,18 +3,24 @@ import dotenv from "dotenv";
 import { getLogoColorsFromUrl } from "./services/helpers.js";
 import { sendOpenAIRequest } from "./services/openai.js";
 import fs from "fs/promises";
-import { questions, mainQuestions, skippableFields } from "./data.js";
+import { questions, mainQuestions } from "./data.js";
 import { sectionPrompt } from "./prompts.js";
-import { generatePreviewImages } from "./services/helpers.js";
-import {
-  saveAndNext,
-  showEditableSections,
-  applyJsonToHTML,
-} from "./editHTML.js";
+
 import { loadSession, saveSession } from "./services/sessionStore.js";
-import { generateRandomPageBasedOnInitialValues } from "./services/htmlBuilder.js";
+import {
+  generateRandomPageBasedOnInitialValues,
+  embedHtmlBlock,
+  assembleHtmlUsingOriginalTemplate,
+} from "./services/htmlBuilder.js";
 import { askQuestion } from "./services/openai.js";
 import { deployGitAndPreview } from "./deploy/gitPush.js";
+import { processHtmlFile } from "./embed_html.js";
+import { searchClosestBlocks, applyEditToBlock } from "./editHTML.js";
+import { v4 as uuid4 } from "uuid";
+import { generatePreviewImages } from "./services/helpers.js";
+import { filterAvailableDomains } from "./deploy/domain/checkDomain.js";
+import { generateDomainIdeas } from "./deploy/domain/generateDomain.js";
+import { connectDomainToGitHubPages } from "./deploy/domain/connectDomainToGitHubPages.js";
 
 dotenv.config();
 
@@ -24,6 +30,7 @@ export const userSessions = new Map();
 
 bot.start(async (ctx) => {
   const chatId = ctx.chat.id;
+
   let session = await loadSession(chatId);
   if (session && session.answers?.projectName) {
     return ctx.reply("Welcome back! What would you like to do?", {
@@ -31,7 +38,7 @@ bot.start(async (ctx) => {
         inline_keyboard: [
           [
             {
-              text: `✏️ Edit Current (${session.answers.projectName})`,
+              text: `✏️ Edit (${session.answers.projectName})`,
               callback_data: "edit_current",
             },
             { text: "🆕 Create New Website", callback_data: "start_new" },
@@ -71,18 +78,110 @@ bot.on("text", async (ctx) => {
   if (!session) return;
   const input = ctx.message.text.trim();
 
-  // Handle editing text or link
-  if (session.editing) {
-    const currentKey = session.editing.keys[session.editing.currentIndex];
-    const keyType = currentKey.split("-")[0];
+  if (session?.editing?.isActive) {
+    const rawInput = session.pendingImage
+      ? `${input}: ${session.pendingImage?.url}`
+      : input;
+    const chatId = ctx.chat.id;
+    console.log(`📝 Raw user instruction: "${rawInput}" from chat ${chatId}`);
 
-    if (keyType === "text") {
-      session.editing.content[currentKey] = input;
-    } else if (keyType === "link") {
-      session.editing.content[currentKey] = { href: input, text: input };
+    await ctx.reply("🧠 Understanding your request...");
+
+    // 1. Преобразуем обычный запрос в техническое описание
+    const rephrasedPrompt = `
+    You're a web developer assistant. The user said:
+    "${rawInput}"
+    
+    Sections in the current landing page: ${
+      Array.isArray(session.config?.sections)
+        ? session.config.sections.join(", ")
+        : "unknown"
     }
+    
+    Based on the context of editing a landing page, return a short technical task describing what should be changed (e.g., "Update the text in the header", "Replace the hero image", "Change button color in footer").
+    
+    Return only the task, no explanation.
+    `.trim();
+    const userInstruction = await sendOpenAIRequest(
+      "You help interpret user intent into technical HTML edit instructions.",
+      rephrasedPrompt,
+      0.2
+    );
 
-    return saveAndNext(ctx, session);
+    console.log(
+      `📝 Received edit instruction: "${userInstruction}" from chat ${chatId}`
+    );
+
+    await ctx.reply("🔄 Applying your change...");
+
+    try {
+      // 1. Найти релевантный блок
+      const blocks = await searchClosestBlocks(
+        chatId,
+        session.projectId,
+        userInstruction
+      );
+
+      console.log(`🔍 Found ${blocks.length} matching blocks`, blocks);
+
+      if (!blocks.length) {
+        await ctx.reply("⚠️ I couldn't find a relevant block. Try rephrasing.");
+        await saveSession(chatId, session);
+        return;
+      }
+
+      const targetBlock = blocks[0];
+      console.log(`🎯 Editing block ID: ${targetBlock.id}`);
+
+      // 2. Отредактировать блок через GPT
+      const updatedHtml = await applyEditToBlock(
+        targetBlock.content,
+        userInstruction
+      );
+      const folderPath = `./generated/${session.generatedFolder}`;
+      const htmlPath = `${folderPath}/index.html`;
+
+      console.log(
+        `✅ GPT returned updated HTML for block ${targetBlock.content}`
+      );
+      // 3. Сохранить изменения в БД
+      await embedHtmlBlock(
+        chatId,
+        session.projectId,
+        targetBlock.id,
+        updatedHtml
+      );
+      await assembleHtmlUsingOriginalTemplate(
+        chatId,
+        session.projectId,
+        htmlPath
+      );
+      console.log(`💾 Saved updated block ${targetBlock.id} to DB`);
+
+      await ctx.reply(
+        "✅ Your change has been applied. Give more tasks to change or:",
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: "👀 Preview site", callback_data: "show_preview" },
+                { text: "🌎 Publish", callback_data: "editing_done" },
+              ],
+            ],
+          },
+        }
+      );
+      session.pendingImage = null;
+      await saveSession(chatId, session);
+      console.log(`💾 Session updated for chat ${chatId}`);
+    } catch (err) {
+      console.error("❌ Error applying edit:", err);
+      await ctx.reply(
+        "❌ Something went wrong while editing. Please try again later."
+      );
+      session.editing = null;
+      await saveSession(chatId, session);
+    }
   }
   // Handle main questions
   if (!session.answers.shortDescription) {
@@ -128,11 +227,12 @@ bot.on("text", async (ctx) => {
     const userDomain = input.replace(/^https?:\/\//, "").trim();
     // Здесь можно добавить верификацию или инструкции
     await ctx.reply(
-      `🔧 Please configure your domain's DNS to point to:\nCNAME → hellosite.ai`
+      `🔧 Please configure your domain's DNS to point to:\nCNAME → ${userDomain}`
     );
     await ctx.reply(`✅ We'll map ${userDomain} to your project soon.`);
     session.customDomain = userDomain;
     delete session.expectingDomain;
+    await connectDomainToGitHubPages(userDomain, session.repo);
     await saveSession(chatId, session);
     return;
   }
@@ -141,34 +241,80 @@ bot.on("text", async (ctx) => {
 bot.on("photo", async (ctx) => {
   const chatId = ctx.chat.id;
   let session = userSessions.get(chatId);
+  const fileId = ctx.message.photo.pop().file_id;
+  const fileUrl = await ctx.telegram.getFileLink(fileId);
+  const caption = ctx.message.caption?.trim();
+
   if (!session) {
     session = await loadSession(chatId);
     userSessions.set(chatId, session);
   }
+  if (session.editing?.isActive) {
+    if (caption) {
+      // 📸 + ✍️ Одновременно
+      await ctx.reply("🧠 Replacing image based on your caption...");
 
-  // If editing image
-  if (session?.editing) {
-    const currentKey = session.editing.keys[session.editing.currentIndex];
-    const keyType = currentKey.split("-")[0];
+      const blocks = await searchClosestBlocks(
+        chatId,
+        session.projectId,
+        caption
+      );
+      if (!blocks.length) {
+        await ctx.reply("⚠️ No matching block found.");
+        return;
+      }
 
-    if (keyType === "img") {
-      const fileId = ctx.message.photo.pop().file_id;
-      const fileUrl = await ctx.telegram.getFileLink(fileId);
-      session.editing.content[currentKey] = fileUrl.href;
-      return saveAndNext(ctx, session);
+      const targetBlock = blocks[0];
+      const imageUrl = fileUrl.href;
+      const instruction = `Replace the image in this block with this new one: ${imageUrl}`;
+      const updatedHtml = await applyEditToBlock(
+        targetBlock.content,
+        instruction
+      );
+      const htmlPath = `./generated/${session.generatedFolder}/index.html`;
+      await embedHtmlBlock(
+        chatId,
+        session.projectId,
+        targetBlock.id,
+        updatedHtml
+      );
+      await assembleHtmlUsingOriginalTemplate(
+        chatId,
+        session.projectId,
+        htmlPath
+      );
+      await ctx.reply("✅ Your change has been applied.", {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: "✏️ Edit More", callback_data: "edit_current" },
+              { text: "👀 Preview site", callback_data: "show_preview" },
+              { text: "🌎 Publish", callback_data: "editing_done" },
+            ],
+          ],
+        },
+      });
+    } else {
+      // Только фото — ждём инструкцию
+      await ctx.reply(
+        "📤 Photo received. Now tell me what image you'd like to replace."
+      );
+
+      session.pendingImage = { url: fileUrl.href };
+      await saveSession(chatId, session);
     }
   }
 
   // Default logic if not editing
-  const fileId = ctx.message.photo.pop().file_id;
-  const fileUrl = await ctx.telegram.getFileLink(fileId);
-  const colors = await getLogoColorsFromUrl(fileUrl);
-  console.log("Extracted Colors:", colors);
-  session.answers.logo = fileUrl.href;
-  session.answers.colors = colors;
+  if (!session.editing?.isActive) {
+    const colors = await getLogoColorsFromUrl(fileUrl);
+    console.log("Extracted Colors:", colors);
+    session.answers.logo = fileUrl.href;
+    session.answers.colors = colors;
 
-  await generateRandomPageBasedOnInitialValues(ctx, session);
-  await saveSession(chatId, session);
+    await generateRandomPageBasedOnInitialValues(ctx, session);
+    await saveSession(chatId, session);
+  }
   console.log("@@@ final session", JSON.stringify(session));
 });
 
@@ -183,10 +329,10 @@ bot.on("callback_query", async (ctx) => {
 
   if (!session) return;
 
-  if (action === "skip_edit") {
-    saveAndNext(ctx, session);
-    return;
-  }
+  // if (action === "skip_edit") {
+  //   saveAndNext(ctx, session);
+  //   return;
+  // }
   if (action === "generate_new") {
     await ctx.answerCbQuery();
     await generateRandomPageBasedOnInitialValues(ctx, session);
@@ -195,10 +341,48 @@ bot.on("callback_query", async (ctx) => {
   }
 
   console.log("@@@ session", JSON.stringify(session));
-  if (action === "edit_current") {
+  if (action === "like_current") {
     await ctx.answerCbQuery();
     console.log("📝 Edit current template:", session);
-    showEditableSections(ctx, session.config.sections);
+    ctx.reply(`Great! Processing your website...`);
+    const htmlPath = `./generated/${session.generatedFolder}/index.html`;
+    try {
+      const projectId = uuid4();
+      session.projectId = projectId;
+      await processHtmlFile(htmlPath, chatId, projectId);
+      await saveSession(chatId, session);
+    } catch (error) {
+      console.error("Error processing HTML file:", error);
+      await ctx.reply("❌ Failed to process HTML file.");
+      return;
+    }
+    await ctx.reply(
+      "✅ Your website is ready! You can now edit it or deploy it.",
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: "✏️ Edit", callback_data: "edit_current" },
+              { text: "✅ Deploy Website", callback_data: "editing_done" },
+            ],
+          ],
+        },
+      }
+    );
+    await saveSession(chatId, session);
+  }
+  if (action === "edit_current") {
+    await ctx.answerCbQuery();
+    //message  - now edit the current template type the task what you want to edit
+    await ctx.reply(
+      `📝 Please type a task what you want to edit in the current template.\nFor example: 'Change the logo', 'Add a new section', 'Update the text in the header'.`
+    );
+    console.log("📝 Edit current template:", session);
+
+    session.editing = {
+      isActive: true,
+    };
+    await saveSession(chatId, session);
   }
 
   if (action === "editing_done") {
@@ -206,7 +390,6 @@ bot.on("callback_query", async (ctx) => {
     await ctx.reply("🚀 Deploying your website...");
 
     await deployGitAndPreview(ctx, session);
-
     await ctx.reply(
       `✅ Now we need to connect a domain (e.g. yoursite.com – this is the web address where people will find your site)`,
       {
@@ -227,51 +410,41 @@ bot.on("callback_query", async (ctx) => {
     await saveSession(ctx.chat.id, session);
   }
 
-  if (action.startsWith("edit_section_")) {
-    const section = action.replace("edit_section_", "");
-    const jsonPath = `./generated/${session.generatedFolder}/${session.answers.projectName}.json`;
+  if (action === "create_domain") {
+    await ctx.answerCbQuery();
 
-    try {
-      const json = JSON.parse(await fs.readFile(jsonPath, "utf8"));
-      const sectionData = json[section];
-
-      if (!sectionData) {
-        await ctx.reply("❌ This section has no editable content.");
-        return;
-      }
-
-      session.editing = {
-        section,
-        keys: Object.keys(sectionData),
-        currentIndex: 0,
-        content: sectionData,
-      };
-      saveAndNext(ctx, session);
-      await saveSession(chatId, session);
-    } catch (e) {
-      console.error("❌ Failed to load JSON for editing", e);
-      await ctx.reply("Something went wrong while loading the section.");
-    }
+    await ctx.reply(`✍️ Send your domain or generate with AI`, {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            {
+              text: "🔮 Generate with AI",
+              callback_data: "generate_ai_domain",
+            },
+          ],
+        ],
+      },
+    });
   }
-
+  if (action === "generate_ai_domain") {
+    const rawIdeas = await generateDomainIdeas(
+      session.answers.projectName + " " + session.answers.shortDescription
+    );
+    const available = await filterAvailableDomains(rawIdeas);
+    console.log("Available domains:", available);
+  }
   if (action === "show_preview") {
     await ctx.reply("🖼️ Generating preview...");
 
     const folderPath = `./generated/${session.generatedFolder}`;
     const htmlPath = `${folderPath}/index.html`;
-    const jsonPath = `${folderPath}/${session.answers.projectName}.json`;
     const html = await fs.readFile(htmlPath, "utf8");
-    const json = JSON.parse(await fs.readFile(jsonPath, "utf8"));
-    await applyJsonToHTML(html, json, htmlPath);
-    const newHtml = await fs.readFile(htmlPath, "utf8");
-    await generatePreviewImages(ctx, newHtml, `index`, folderPath);
-    await ctx.reply("✅ Preview updated. What would you like to do next?", {
+
+    await generatePreviewImages(ctx, html, `index`, folderPath);
+    await ctx.reply("✅ Preview updated. Give more tasks or:", {
       reply_markup: {
         inline_keyboard: [
-          [
-            { text: "✏️ Continue Editing", callback_data: "edit_current" },
-            { text: "✅ Done Editing", callback_data: "editing_done" },
-          ],
+          [{ text: "🌎 Publish", callback_data: "editing_done" }],
         ],
       },
     });
@@ -283,18 +456,6 @@ bot.on("callback_query", async (ctx) => {
       "🔗 Please send the domain you want to connect (e.g. `yourdomain.com`). We'll guide you to set it up."
     );
     session.expectingDomain = "connect";
-  }
-
-  if (action === "create_domain") {
-    await ctx.answerCbQuery();
-    await ctx.reply("🆕 Generating a custom subdomain for you...");
-    const subdomain = `${session.answers.projectName
-      .toLowerCase()
-      .replace(/\s+/g, "-")}-${ctx.chat.id}.hellosite.ai`;
-
-    session.liveUrl = `https://${subdomain}`;
-    await ctx.reply(`✅ Your new domain: ${session.liveUrl}`);
-    await saveSession(ctx.chat.id, session);
   }
 });
 
