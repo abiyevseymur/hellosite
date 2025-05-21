@@ -38,6 +38,7 @@ export const deployGitAndPreview = async (ctx, session) => {
     const siteUrl = `https://hellositeai.github.io/${projectName}/`;
 
     console.log(`✅ Successful deployment:\n${stdout}`);
+    session.siteUrl = siteUrl;
     await ctx.reply(
       `🚀 <b>Deployment Successful!</b>\n\n🔗 <a href="${siteUrl}">Click here to view your website</a>\n\n<i>This is a preview link. Later, you will be able to connect a real custom domain!</i>\n\nIt may take a few seconds to appear globally.`,
       { parse_mode: "HTML" }

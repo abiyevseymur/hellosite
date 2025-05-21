@@ -1,15 +1,15 @@
 import axios from "axios";
 import { Buffer } from "buffer";
 
-// Конфигурация — укажи один раз
 const GITHUB_API = "https://api.github.com";
 const GITHUB_OWNER = "hellositeai";
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+
 /**
- * Привязывает кастомный домен к GitHub Pages
- * @param {string} domain - Пример: 'hello-site.hellosite.app'
- * @param {string} repo - Пример: 'hello-site'
- * @param {string} branch - Ветка, по умолчанию 'main'
+ * Привязывает кастомный домен к репозиторию GitHub Pages
+ * @param {string} domain - Например: 'wooley.hellosite.app'
+ * @param {string} repo - Название репозитория, например: 'landing-wooley'
+ * @param {string} branch - Ветка для GitHub Pages (по умолчанию 'main')
  */
 export async function connectDomainToGitHubPages(
   domain,
@@ -19,9 +19,9 @@ export async function connectDomainToGitHubPages(
   const contentUrl = `${GITHUB_API}/repos/${GITHUB_OWNER}/${repo}/contents/CNAME`;
   const pagesUrl = `${GITHUB_API}/repos/${GITHUB_OWNER}/${repo}/pages`;
 
-  // Шаг 1: Загрузка CNAME файла
   let existingSha = null;
 
+  // Шаг 1: Проверка — существует ли уже CNAME
   try {
     const res = await axios.get(contentUrl, {
       headers: {
@@ -38,6 +38,7 @@ export async function connectDomainToGitHubPages(
     }
   }
 
+  // Шаг 2: Загрузка нового CNAME файла
   const encodedContent = Buffer.from(domain).toString("base64");
 
   await axios.put(
@@ -56,17 +57,14 @@ export async function connectDomainToGitHubPages(
     }
   );
 
-  console.log(`✅ CNAME uploaded: ${domain}`);
+  console.log(`✅ Uploaded CNAME: ${domain}`);
 
-  // Шаг 2: Включаем GitHub Pages (если нужно)
+  // Шаг 3: Включаем GitHub Pages (если ещё не включён)
   try {
     await axios.post(
       pagesUrl,
       {
-        source: {
-          branch,
-          path: "/",
-        },
+        source: { branch, path: "/" },
       },
       {
         headers: {
@@ -85,7 +83,7 @@ export async function connectDomainToGitHubPages(
     }
   }
 
-  // Шаг 3: Устанавливаем кастомный домен и включаем HTTPS
+  // Шаг 4: Устанавливаем кастомный домен и HTTPS
   try {
     await axios.patch(
       pagesUrl,
@@ -100,14 +98,13 @@ export async function connectDomainToGitHubPages(
         },
       }
     );
-  } catch (error) {
-    if (error.response?.status === 422) {
-      console.log("ℹ️ Custom domain already set");
+    console.log(`🌐 Domain "${domain}" attached to GitHub Pages`);
+  } catch (err) {
+    if (err.response?.status === 422) {
+      console.log("ℹ️ Domain already attached");
     } else {
-      console.error("❌ Failed to set custom domain:", error.message);
-      throw error;
+      console.error("❌ Failed to set domain:", err.message);
+      throw err;
     }
   }
-
-  console.log(`🌍 Domain "${domain}" connected to GitHub Pages`);
 }

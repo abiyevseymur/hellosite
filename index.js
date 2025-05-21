@@ -18,8 +18,6 @@ import { processHtmlFile } from "./embed_html.js";
 import { searchClosestBlocks, applyEditToBlock } from "./editHTML.js";
 import { v4 as uuid4 } from "uuid";
 import { generatePreviewImages } from "./services/helpers.js";
-import { filterAvailableDomains } from "./deploy/domain/checkDomain.js";
-import { generateDomainIdeas } from "./deploy/domain/generateDomain.js";
 import { connectDomainToGitHubPages } from "./deploy/domain/connectDomainToGitHubPages.js";
 
 dotenv.config();
@@ -32,26 +30,40 @@ bot.start(async (ctx) => {
   const chatId = ctx.chat.id;
 
   let session = await loadSession(chatId);
-  if (session && session.answers?.projectName) {
-    return ctx.reply("Welcome back! What would you like to do?", {
-      reply_markup: {
-        inline_keyboard: [
-          [
-            {
-              text: `✏️ Edit (${session.answers.projectName})`,
-              callback_data: "edit_current",
-            },
-            { text: "🆕 Create New Website", callback_data: "start_new" },
-          ],
-        ],
+  if (session?.projects?.length) {
+    const buttons = session.projects.map((proj, i) => [
+      {
+        text: `📁 ${
+          proj.answers.projectName || "Untitled Project #" + (i + 1)
+        }`,
+        callback_data: `select_project_${i}`,
       },
-    });
+    ]);
+
+    await ctx.reply(
+      "Welcome back! Which project do you want to continue editing?",
+      {
+        reply_markup: {
+          inline_keyboard: [
+            ...buttons,
+            [{ text: "🆕 Create New Website", callback_data: "start_new" }],
+          ],
+        },
+      }
+    );
+    return;
   }
 
   session = {
-    answers: {},
-    config: {},
-    step: 1,
+    projects: [
+      {
+        name: "",
+        answers: {},
+        config: {},
+        step: 1,
+      },
+    ],
+    currentProjectIndex: 0,
   };
   userSessions.set(chatId, session);
   await ctx.reply(questions.type);
@@ -59,9 +71,15 @@ bot.start(async (ctx) => {
 bot.action("start_new", async (ctx) => {
   const chatId = ctx.chat.id;
   const session = {
-    answers: {},
-    config: {},
-    step: 1,
+    projects: [
+      {
+        name: "",
+        answers: {},
+        config: {},
+        step: 1,
+      },
+    ],
+    currentProjectIndex: 0,
   };
   userSessions.set(chatId, session);
   await ctx.editMessageText(questions.type);
@@ -76,11 +94,13 @@ bot.on("text", async (ctx) => {
   }
 
   if (!session) return;
+  const currentProject = session.projects[session.currentProjectIndex];
+
   const input = ctx.message.text.trim();
 
-  if (session?.editing?.isActive) {
-    const rawInput = session.pendingImage
-      ? `${input}: ${session.pendingImage?.url}`
+  if (currentProject?.editing?.isActive) {
+    const rawInput = currentProject.pendingImage
+      ? `${input}: ${currentProject.pendingImage?.url}`
       : input;
     const chatId = ctx.chat.id;
     console.log(`📝 Raw user instruction: "${rawInput}" from chat ${chatId}`);
@@ -93,8 +113,8 @@ bot.on("text", async (ctx) => {
     "${rawInput}"
     
     Sections in the current landing page: ${
-      Array.isArray(session.config?.sections)
-        ? session.config.sections.join(", ")
+      Array.isArray(currentProject.config?.sections)
+        ? currentProject.config.sections.join(", ")
         : "unknown"
     }
     
@@ -118,7 +138,7 @@ bot.on("text", async (ctx) => {
       // 1. Найти релевантный блок
       const blocks = await searchClosestBlocks(
         chatId,
-        session.projectId,
+        currentProject.projectId,
         userInstruction
       );
 
@@ -126,7 +146,7 @@ bot.on("text", async (ctx) => {
 
       if (!blocks.length) {
         await ctx.reply("⚠️ I couldn't find a relevant block. Try rephrasing.");
-        await saveSession(chatId, session);
+        await saveSession(chatId, currentProject);
         return;
       }
 
@@ -138,7 +158,7 @@ bot.on("text", async (ctx) => {
         targetBlock.content,
         userInstruction
       );
-      const folderPath = `./generated/${session.generatedFolder}`;
+      const folderPath = `./generated/${currentProject.generatedFolder}`;
       const htmlPath = `${folderPath}/index.html`;
 
       console.log(
@@ -147,13 +167,13 @@ bot.on("text", async (ctx) => {
       // 3. Сохранить изменения в БД
       await embedHtmlBlock(
         chatId,
-        session.projectId,
+        currentProject.projectId,
         targetBlock.id,
         updatedHtml
       );
       await assembleHtmlUsingOriginalTemplate(
         chatId,
-        session.projectId,
+        currentProject.projectId,
         htmlPath
       );
       console.log(`💾 Saved updated block ${targetBlock.id} to DB`);
@@ -171,21 +191,21 @@ bot.on("text", async (ctx) => {
           },
         }
       );
-      session.pendingImage = null;
-      await saveSession(chatId, session);
+      currentProject.pendingImage = null;
+      await saveSession(chatId, currentProject);
       console.log(`💾 Session updated for chat ${chatId}`);
     } catch (err) {
       console.error("❌ Error applying edit:", err);
       await ctx.reply(
         "❌ Something went wrong while editing. Please try again later."
       );
-      session.editing = null;
-      await saveSession(chatId, session);
+      currentProject.editing = null;
+      await saveSession(chatId, currentProject);
     }
   }
   // Handle main questions
-  if (!session.answers.shortDescription) {
-    session.answers.shortDescription = input;
+  if (!currentProject.answers.shortDescription) {
+    currentProject.answers.shortDescription = input;
     const user = `Based on the following project description:
     "${input}"
     Return a JSON object with the most relevant category as "main", and up to 3 other relevant categories as "related".
@@ -197,43 +217,51 @@ bot.on("text", async (ctx) => {
     const system = "Only return JSON.";
     const typeStructure = await sendOpenAIRequest(system, user);
     const typeJSON = JSON.parse(typeStructure);
-    session.config = { typeStructure: typeJSON };
-    session.answers.typeStructure = typeJSON;
+    currentProject.config = { typeStructure: typeJSON };
+    currentProject.answers.typeStructure = typeJSON;
     await ctx.reply(`✅ Looks like your website type is: ${typeJSON?.main}`);
-    const about = mainQuestions[session.step];
+    const about = mainQuestions[currentProject.step];
     askQuestion(ctx, about);
     return;
   }
 
-  if (!session.answers.goal) {
-    session.answers.goal = input;
+  if (!currentProject.answers.goal) {
+    currentProject.answers.goal = input;
     const sections = await sendOpenAIRequest(
       sectionPrompt,
       `Based on the following project description and goal, select only the necessary sections from the allowed list and return them as a list of section keys:${input}`,
       0
     );
     console.log("@@@ SECTIONS", sections);
-    session.config.sections = JSON.parse(sections);
-    const about = mainQuestions[session.step];
+    currentProject.config.sections = JSON.parse(sections);
+    const about = mainQuestions[currentProject.step];
     askQuestion(ctx, about);
     return;
   }
-  if (!session.answers.projectName) {
-    session.answers.projectName = input;
+  if (!currentProject.answers.projectName) {
+    currentProject.answers.projectName = input;
     await ctx.reply("Please, upload your logo...");
     return;
   }
-  if (session.expectingDomain === "connect") {
+  if (currentProject.expectingDomain === "connect") {
     const userDomain = input.replace(/^https?:\/\//, "").trim();
-    // Здесь можно добавить верификацию или инструкции
+
     await ctx.reply(
-      `🔧 Please configure your domain's DNS to point to:\nCNAME → ${userDomain}`
+      `🔧 To connect your domain, please go to your domain provider's DNS settings and add the following record:\n\n` +
+        `➡️ Type: CNAME\n` +
+        `➡️ Name: www\n` +
+        `➡️ Value: ${currentProject.siteUrl}\n\n` +
+        `📌 This tells your domain to point to our server.`
     );
+
     await ctx.reply(`✅ We'll map ${userDomain} to your project soon.`);
-    session.customDomain = userDomain;
-    delete session.expectingDomain;
-    await connectDomainToGitHubPages(userDomain, session.repo);
-    await saveSession(chatId, session);
+    currentProject.customDomain = userDomain;
+    delete currentProject.expectingDomain;
+    connectDomainToGitHubPages(
+      currentProject.customDomain,
+      currentProject.repo
+    );
+    await saveSession(chatId, currentProject);
     return;
   }
 });
@@ -249,14 +277,16 @@ bot.on("photo", async (ctx) => {
     session = await loadSession(chatId);
     userSessions.set(chatId, session);
   }
-  if (session.editing?.isActive) {
+  const currentProject = session.projects[session.currentProjectIndex];
+
+  if (currentProject.editing?.isActive) {
     if (caption) {
       // 📸 + ✍️ Одновременно
       await ctx.reply("🧠 Replacing image based on your caption...");
 
       const blocks = await searchClosestBlocks(
         chatId,
-        session.projectId,
+        currentProject.projectId,
         caption
       );
       if (!blocks.length) {
@@ -271,16 +301,16 @@ bot.on("photo", async (ctx) => {
         targetBlock.content,
         instruction
       );
-      const htmlPath = `./generated/${session.generatedFolder}/index.html`;
+      const htmlPath = `./generated/${currentProject.generatedFolder}/index.html`;
       await embedHtmlBlock(
         chatId,
-        session.projectId,
+        currentProject.projectId,
         targetBlock.id,
         updatedHtml
       );
       await assembleHtmlUsingOriginalTemplate(
         chatId,
-        session.projectId,
+        currentProject.projectId,
         htmlPath
       );
       await ctx.reply("✅ Your change has been applied.", {
@@ -300,22 +330,22 @@ bot.on("photo", async (ctx) => {
         "📤 Photo received. Now tell me what image you'd like to replace."
       );
 
-      session.pendingImage = { url: fileUrl.href };
-      await saveSession(chatId, session);
+      currentProject.pendingImage = { url: fileUrl.href };
+      await saveSession(chatId, currentProject);
     }
   }
 
   // Default logic if not editing
-  if (!session.editing?.isActive) {
+  if (!currentProject.editing?.isActive) {
     const colors = await getLogoColorsFromUrl(fileUrl);
     console.log("Extracted Colors:", colors);
-    session.answers.logo = fileUrl.href;
-    session.answers.colors = colors;
+    currentProject.answers.logo = fileUrl.href;
+    currentProject.answers.colors = colors;
 
-    await generateRandomPageBasedOnInitialValues(ctx, session);
-    await saveSession(chatId, session);
+    await generateRandomPageBasedOnInitialValues(ctx, currentProject);
+    await saveSession(chatId, currentProject);
   }
-  console.log("@@@ final session", JSON.stringify(session));
+  console.log("@@@ final session", JSON.stringify(currentProject));
 });
 
 bot.on("callback_query", async (ctx) => {
@@ -328,29 +358,49 @@ bot.on("callback_query", async (ctx) => {
   const action = ctx.callbackQuery.data;
 
   if (!session) return;
+  const currentProject = session.projects[session.currentProjectIndex];
 
-  // if (action === "skip_edit") {
-  //   saveAndNext(ctx, session);
-  //   return;
-  // }
+  if (action.startsWith("select_project_")) {
+    const index = parseInt(action.split("_").pop());
+    currentProject.currentProjectIndex = index;
+    await ctx.answerCbQuery();
+
+    await saveSession(chatId, currentProject);
+
+    return ctx.reply(
+      `Project - ${currentProject.answers.projectName}. What would you like to do?`,
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: `✏️ Edit (${currentProject.answers.projectName})`,
+                callback_data: "edit_current",
+              },
+              { text: "🌍 Publish", callback_data: "editing_done" },
+            ],
+          ],
+        },
+      }
+    );
+  }
   if (action === "generate_new") {
     await ctx.answerCbQuery();
-    await generateRandomPageBasedOnInitialValues(ctx, session);
-    session.generated++;
-    await saveSession(chatId, session);
+    await generateRandomPageBasedOnInitialValues(ctx, currentProject);
+    currentProject.generated++;
+    await saveSession(chatId, currentProject);
   }
 
-  console.log("@@@ session", JSON.stringify(session));
   if (action === "like_current") {
     await ctx.answerCbQuery();
-    console.log("📝 Edit current template:", session);
+    console.log("📝 Edit current template:", currentProject);
     ctx.reply(`Great! Processing your website...`);
-    const htmlPath = `./generated/${session.generatedFolder}/index.html`;
+    const htmlPath = `./generated/${currentProject.generatedFolder}/index.html`;
     try {
       const projectId = uuid4();
-      session.projectId = projectId;
+      currentProject.projectId = projectId;
       await processHtmlFile(htmlPath, chatId, projectId);
-      await saveSession(chatId, session);
+      await saveSession(chatId, currentProject);
     } catch (error) {
       console.error("Error processing HTML file:", error);
       await ctx.reply("❌ Failed to process HTML file.");
@@ -369,7 +419,7 @@ bot.on("callback_query", async (ctx) => {
         },
       }
     );
-    await saveSession(chatId, session);
+    await saveSession(chatId, currentProject);
   }
   if (action === "edit_current") {
     await ctx.answerCbQuery();
@@ -377,66 +427,37 @@ bot.on("callback_query", async (ctx) => {
     await ctx.reply(
       `📝 Please type a task what you want to edit in the current template.\nFor example: 'Change the logo', 'Add a new section', 'Update the text in the header'.`
     );
-    console.log("📝 Edit current template:", session);
+    console.log("📝 Edit current template:", currentProject);
 
-    session.editing = {
+    currentProject.editing = {
       isActive: true,
     };
-    await saveSession(chatId, session);
+    await saveSession(chatId, currentProject);
   }
 
   if (action === "editing_done") {
     await ctx.answerCbQuery();
     await ctx.reply("🚀 Deploying your website...");
 
-    await deployGitAndPreview(ctx, session);
+    await deployGitAndPreview(ctx, currentProject);
     await ctx.reply(
       `✅ Now we need to connect a domain (e.g. yoursite.com – this is the web address where people will find your site)`,
       {
         reply_markup: {
           inline_keyboard: [
-            [
-              { text: "🌍 Connect my domain", callback_data: "connect_domain" },
-              {
-                text: "🆕 Create a new domain",
-                callback_data: "create_domain",
-              },
-            ],
+            [{ text: "🌍 Connect my domain", callback_data: "connect_domain" }],
           ],
         },
       }
     );
-    session.editing = null;
-    await saveSession(ctx.chat.id, session);
+    currentProject.editing = null;
+    await saveSession(ctx.chat.id, currentProject);
   }
 
-  if (action === "create_domain") {
-    await ctx.answerCbQuery();
-
-    await ctx.reply(`✍️ Send your domain or generate with AI`, {
-      reply_markup: {
-        inline_keyboard: [
-          [
-            {
-              text: "🔮 Generate with AI",
-              callback_data: "generate_ai_domain",
-            },
-          ],
-        ],
-      },
-    });
-  }
-  if (action === "generate_ai_domain") {
-    const rawIdeas = await generateDomainIdeas(
-      session.answers.projectName + " " + session.answers.shortDescription
-    );
-    const available = await filterAvailableDomains(rawIdeas);
-    console.log("Available domains:", available);
-  }
   if (action === "show_preview") {
     await ctx.reply("🖼️ Generating preview...");
 
-    const folderPath = `./generated/${session.generatedFolder}`;
+    const folderPath = `./generated/${currentProject.generatedFolder}`;
     const htmlPath = `${folderPath}/index.html`;
     const html = await fs.readFile(htmlPath, "utf8");
 
@@ -455,7 +476,7 @@ bot.on("callback_query", async (ctx) => {
     await ctx.reply(
       "🔗 Please send the domain you want to connect (e.g. `yourdomain.com`). We'll guide you to set it up."
     );
-    session.expectingDomain = "connect";
+    currentProject.expectingDomain = "connect";
   }
 });
 
