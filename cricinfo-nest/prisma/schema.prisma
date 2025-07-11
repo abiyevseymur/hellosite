@@ -1,0 +1,26 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Page {
+  id        Int     @id @default(autoincrement())
+  url       String  @unique
+  parentId  Int?
+  parent    Page?   @relation("PageChildren", fields: [parentId], references: [id])
+  children  Page[]  @relation("PageChildren")
+  tables    Table[]
+}
+
+model Table {
+  id      Int     @id @default(autoincrement())
+  pageId  Int
+  page    Page    @relation(fields: [pageId], references: [id])
+  title   String?
+  headers Json?
+  rows    Json?
+}
