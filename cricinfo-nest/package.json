@@ -1,0 +1,25 @@
+{
+  "name": "cricinfo-parser",
+  "version": "1.0.0",
+  "description": "Nest.js service to scrape ESPN Cricinfo tables and store them in PostgreSQL",
+  "main": "dist/main.js",
+  "scripts": {
+    "start": "node dist/main.js",
+    "build": "tsc",
+    "test": "echo \"No tests specified\""
+  },
+  "dependencies": {
+    "@nestjs/common": "^10.0.0",
+    "@nestjs/core": "^10.0.0",
+    "@nestjs/axios": "^2.0.0",
+    "reflect-metadata": "^0.1.13",
+    "rxjs": "^7.8.0",
+    "axios": "^1.8.4",
+    "cheerio": "^1.0.0",
+    "@prisma/client": "^5.12.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.2.0",
+    "prisma": "^5.12.1"
+  }
+}
