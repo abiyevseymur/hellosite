@@ -1,0 +1,31 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model RecordCategory {
+  id         Int      @id @default(autoincrement())
+  parentId   Int?
+  parent     RecordCategory? @relation("CategoryParent", fields: [parentId], references: [id])
+  children   RecordCategory[] @relation("CategoryParent")
+  url        String   @unique
+  title      String
+  type       String   // main, format, sub, data_table
+  tables     RecordTable[]
+  createdAt  DateTime @default(now())
+}
+
+model RecordTable {
+  id           Int      @id @default(autoincrement())
+  categoryId   Int
+  category     RecordCategory @relation(fields: [categoryId], references: [id])
+  url          String
+  title        String
+  columns      String[]
+  rows         Json[]
+  createdAt    DateTime @default(now())
+}
